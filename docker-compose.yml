@@ -1,0 +1,64 @@
+name: modrinth-monitor
+
+services:
+  # --- Core Network Layer ----------------------------------------------------
+  vpn:
+    # Gluetun provides a VPN gateway + firewall so sensitive traffic exits via NordVPN.
+    container_name: vpn
+    image: 'qmcgaw/gluetun:latest'
+    cap_add:
+      - NET_ADMIN                 # Allow Gluetun to manage network interfaces.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: '1'     # Disable IPv6 globally to avoid leaks.
+      net.ipv6.conf.default.disable_ipv6: '1'
+    environment:
+      - 'VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-nordvpn}'  # Provider selector (defaults to NordVPN).
+      - 'OPENVPN_USER=${OPENVPN_USER:-""}'                       # Auth credentials injected at runtime.
+      - 'OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-""}'
+      - BLOCK_NON_VPN_TRAFFIC=yes                                # Kill-switch.
+      - DNS_OVER_HTTPS=yes                                       # Cloudflare DoH.
+      - DNS_UPSTREAM_1=1.1.1.1
+      - DNS_UPSTREAM_2=1.0.0.1
+      - 'TZ=${TZ_VPN:-UTC}'
+      - LOG_LEVEL=debug
+      - OPENVPN_VERBOSITY=4
+    devices:
+      - '/dev/net/tun:/dev/net/tun'                              # Required TUN interface.
+    volumes:
+      - ./gluetun-auth/config.toml:/gluetun/auth/config.toml:ro  # Control server auth config
+    # Uncomment to expose control server to host for debugging (not required for monitor -> vpn)
+    # ports:
+    #   - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'wget -qO- https://1.1.1.1 || exit 1'                  # Verify external connectivity.
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  modrinth-monitor:
+    build: .
+    depends_on:
+      vpn:
+        condition: service_healthy
+    network_mode: 'service:vpn'
+    environment:
+      - MODRINTH_URL=${MODRINTH_URL:-https://modrinth.com/modpack/winterlands}
+      - DOWNLOAD_DIR=/app/downloads
+      - MIN_DELAY_MINUTES=${MIN_DELAY_MINUTES:-180}
+      - MAX_DELAY_MINUTES=${MAX_DELAY_MINUTES:-240}
+      - ONE_SHOT=${ONE_SHOT:-false}
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - GLUETUN_CONTROL_URL=http://localhost:8000
+      - GLUETUN_CONTROL_USER=${GLUETUN_CONTROL_USER:-}
+      - GLUETUN_CONTROL_PASSWORD=${GLUETUN_CONTROL_PASSWORD:-}
+      - GLUETUN_COUNTRY_POOL=${GLUETUN_COUNTRY_POOL}
+      - GLUETUN_CITY_POOL=${GLUETUN_CITY_POOL}
+      - GLUETUN_REGION_POOL=${GLUETUN_REGION_POOL}
+      - GLUETUN_HOSTNAME_POOL=${GLUETUN_HOSTNAME_POOL}
+    volumes:
+      - ./downloads:/app/downloads
+    restart: unless-stopped

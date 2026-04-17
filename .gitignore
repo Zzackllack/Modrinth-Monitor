@@ -1,0 +1,9 @@
+node_modules
+downloads
+.playwright-browsers
+.pnpm-home
+test-results
+*.log
+context/**
+AGENTS.md
+NordVPN-Server-list.md
