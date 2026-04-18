@@ -72,4 +72,4 @@ Please open issues or PRs for improvements. I am probably not going to add featu
 
 ## License
 
-This repository does not include a license file. Add a license if you intend to publish or share widely.
+This repository is licensed under the Unlicense, you can do whatever you want with it. See `LICENSE` for details.
