@@ -7,6 +7,7 @@ const downloadsPath =
 
 export default defineConfig({
   testDir: './tests',
+  globalSetup: './src/setup-visit.ts',
   timeout: 90_000,
   retries: 1,
   fullyParallel: false,

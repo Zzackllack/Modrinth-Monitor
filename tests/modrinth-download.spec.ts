@@ -13,10 +13,10 @@ const log = (action: string, extra: Record<string, unknown> = {}) => {
   );
 };
 
-test.describe("Modrinth modpack download", () => {
-  test("downloads modpack file and verifies size", async ({ page }) => {
-    await fs.promises.mkdir(downloadDir, { recursive: true });
-    log("test.start", { modrinthUrl, downloadDir });
+test.describe("Modrinth modpack monitor", () => {
+  test("visits modpack page and optionally verifies a download", async ({ page }) => {
+    const visitMode = process.env.MONITOR_VISIT_MODE;
+    log("test.start", { modrinthUrl, downloadDir, visitMode });
 
     await page.goto(modrinthUrl, {
       waitUntil: "domcontentloaded",
@@ -44,6 +44,12 @@ test.describe("Modrinth modpack download", () => {
     await expect(primaryDownload).toBeVisible({ timeout: 20_000 });
     log("download.trigger.visible");
 
+    if (visitMode === "visit") {
+      log("download.skipped", { reason: "visit_only" });
+      return;
+    }
+
+    await fs.promises.mkdir(downloadDir, { recursive: true });
     const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
     await primaryDownload.click();
     log("download.trigger.clicked");

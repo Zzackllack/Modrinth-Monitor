@@ -6,6 +6,8 @@
   "main": "index.js",
   "scripts": {
     "test": "pnpm exec playwright test",
+    "test:unit": "node --test checks/download-policy.test.js",
+    "test:local": "node --test checks/monitor.test.js",
     "monitor": "node src/scheduler.js"
   },
   "keywords": [],

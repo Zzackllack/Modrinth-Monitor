@@ -48,6 +48,7 @@ services:
     environment:
       - MODRINTH_URL=${MODRINTH_URL:-https://modrinth.com/modpack/winterlands}
       - DOWNLOAD_DIR=/app/downloads
+      - DOWNLOAD_PERCENTAGE=${DOWNLOAD_PERCENTAGE:-100}
       - MIN_DELAY_MINUTES=${MIN_DELAY_MINUTES:-180}
       - MAX_DELAY_MINUTES=${MAX_DELAY_MINUTES:-240}
       - ONE_SHOT=${ONE_SHOT:-false}
