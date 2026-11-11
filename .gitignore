@@ -1,5 +1,9 @@
 node_modules
 downloads
+data
+logs
+.env
+playwright-report
 .playwright-browsers
 .pnpm-home
 test-results

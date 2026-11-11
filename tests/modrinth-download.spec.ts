@@ -13,10 +13,19 @@ const log = (action: string, extra: Record<string, unknown> = {}) => {
   );
 };
 
+const egress = {
+  kind: process.env.EGRESS_KIND || "direct",
+  bucket: process.env.EGRESS_BUCKET || null,
+  country: process.env.EGRESS_COUNTRY || null,
+  proxy: process.env.EGRESS_PROXY_ID || null,
+  routeId: process.env.EGRESS_ROUTE_ID || null,
+  attempt: process.env.EGRESS_ATTEMPT || null,
+};
+
 test.describe("Modrinth modpack monitor", () => {
   test("visits modpack page and optionally verifies a download", async ({ page }) => {
     const visitMode = process.env.MONITOR_VISIT_MODE;
-    log("test.start", { modrinthUrl, downloadDir, visitMode });
+    log("test.start", { modrinthUrl, downloadDir, visitMode, egress });
 
     await page.goto(modrinthUrl, {
       waitUntil: "domcontentloaded",

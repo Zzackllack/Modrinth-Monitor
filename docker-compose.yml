@@ -1,34 +1,38 @@
 name: modrinth-monitor
 
 services:
-  # --- Core Network Layer ----------------------------------------------------
+  # --- VPN gateway -----------------------------------------------------------
+  # Gluetun provides the tunnel plus an HTTP proxy. The monitor runs on the
+  # normal compose network and points Chromium at that proxy for VPN routes, so
+  # a single container can switch between VPN and public-proxy egress per run.
   vpn:
-    # Gluetun provides a VPN gateway + firewall so sensitive traffic exits via NordVPN.
     container_name: vpn
     image: 'qmcgaw/gluetun:latest'
     cap_add:
       - NET_ADMIN                 # Allow Gluetun to manage network interfaces.
     sysctls:
-      net.ipv6.conf.all.disable_ipv6: '1'     # Disable IPv6 globally to avoid leaks.
+      net.ipv6.conf.all.disable_ipv6: '1'     # Disable IPv6 inside the tunnel.
       net.ipv6.conf.default.disable_ipv6: '1'
     environment:
-      - 'VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-nordvpn}'  # Provider selector (defaults to NordVPN).
+      - 'VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-nordvpn}'  # Provider selector.
       - 'OPENVPN_USER=${OPENVPN_USER:-""}'                       # Auth credentials injected at runtime.
       - 'OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-""}'
       - BLOCK_NON_VPN_TRAFFIC=yes                                # Kill-switch.
+      - HTTPPROXY=on                                             # Tunnel-backed HTTP proxy for the monitor.
+      - 'HTTPPROXY_LISTENING_ADDRESS=:8888'
+      - HTTPPROXY_STEALTH=on
+      - FIREWALL_INPUT_PORTS=8000,8888                           # Control server + proxy reachable on the compose network.
       - DNS_OVER_HTTPS=yes                                       # Cloudflare DoH.
       - DNS_UPSTREAM_1=1.1.1.1
       - DNS_UPSTREAM_2=1.0.0.1
       - 'TZ=${TZ_VPN:-UTC}'
       - LOG_LEVEL=debug
       - OPENVPN_VERBOSITY=4
+      # The control server is private by default; this sets basic auth for every
+      # route. Change the password in .env before exposing the port anywhere.
+      - 'HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"basic","username":"${GLUETUN_CONTROL_USER:-monitor}","password":"${GLUETUN_CONTROL_PASSWORD:-change-me}"}'
     devices:
       - '/dev/net/tun:/dev/net/tun'                              # Required TUN interface.
-    volumes:
-      - ./gluetun-auth/config.toml:/gluetun/auth/config.toml:ro  # Control server auth config
-    # Uncomment to expose control server to host for debugging (not required for monitor -> vpn)
-    # ports:
-    #   - "8000:8000"
     restart: unless-stopped
     healthcheck:
       test:
@@ -39,12 +43,12 @@ services:
       retries: 3
       start_period: 30s
 
+  # --- Monitor ---------------------------------------------------------------
   modrinth-monitor:
     build: .
     depends_on:
       vpn:
         condition: service_healthy
-    network_mode: 'service:vpn'
     environment:
       - MODRINTH_URL=${MODRINTH_URL:-https://modrinth.com/modpack/winterlands}
       - DOWNLOAD_DIR=/app/downloads
@@ -53,13 +57,48 @@ services:
       - MAX_DELAY_MINUTES=${MAX_DELAY_MINUTES:-240}
       - ONE_SHOT=${ONE_SHOT:-false}
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-      - GLUETUN_CONTROL_URL=http://localhost:8000
-      - GLUETUN_CONTROL_USER=${GLUETUN_CONTROL_USER:-}
-      - GLUETUN_CONTROL_PASSWORD=${GLUETUN_CONTROL_PASSWORD:-}
-      - GLUETUN_COUNTRY_POOL=${GLUETUN_COUNTRY_POOL}
-      - GLUETUN_CITY_POOL=${GLUETUN_CITY_POOL}
-      - GLUETUN_REGION_POOL=${GLUETUN_REGION_POOL}
-      - GLUETUN_HOSTNAME_POOL=${GLUETUN_HOSTNAME_POOL}
+
+      # Egress policy
+      - EGRESS_MODE=${EGRESS_MODE:-mixed}
+      - EGRESS_VPN_SHARE=${EGRESS_VPN_SHARE:-50}
+      - EGRESS_COUNTRY_WEIGHTS=${EGRESS_COUNTRY_WEIGHTS:-US=1,DE=1,other=1}
+      - EGRESS_OTHER_COUNTRIES=${EGRESS_OTHER_COUNTRIES:-}
+      - EGRESS_MAX_RETRIES=${EGRESS_MAX_RETRIES:-3}
+      - EGRESS_RETRY_DELAY_SECONDS=${EGRESS_RETRY_DELAY_SECONDS:-10}
+      - EGRESS_PROXY_FALLBACK=${EGRESS_PROXY_FALLBACK:-vpn}
+      - EGRESS_VERIFY_COUNTRY=${EGRESS_VERIFY_COUNTRY:-true}
+      - EGRESS_PROBE_TIMEOUT_MS=${EGRESS_PROBE_TIMEOUT_MS:-20000}
+
+      # VPN route
+      - VPN_PROXY_URL=${VPN_PROXY_URL:-http://vpn:8888}
+      - GLUETUN_CONTROL_URL=${GLUETUN_CONTROL_URL:-http://vpn:8000}
+      - GLUETUN_CONTROL_USER=${GLUETUN_CONTROL_USER:-monitor}
+      - GLUETUN_CONTROL_PASSWORD=${GLUETUN_CONTROL_PASSWORD:-change-me}
+      - GLUETUN_CITY_POOL=${GLUETUN_CITY_POOL:-}
+      - GLUETUN_REGION_POOL=${GLUETUN_REGION_POOL:-}
+      - GLUETUN_HOSTNAME_POOL=${GLUETUN_HOSTNAME_POOL:-}
+      - VPN_CONNECT_TIMEOUT_SECONDS=${VPN_CONNECT_TIMEOUT_SECONDS:-120}
+      - VPN_RESTART_TIMEOUT_SECONDS=${VPN_RESTART_TIMEOUT_SECONDS:-30}
+      - VPN_STATUS_POLL_SECONDS=${VPN_STATUS_POLL_SECONDS:-3}
+
+      # Public proxy route
+      - PROXY_SOURCES=${PROXY_SOURCES:-proxifly,monosans}
+      - PROXY_PROTOCOLS=${PROXY_PROTOCOLS:-http,https,socks5}
+      - PROXY_REFRESH_MINUTES=${PROXY_REFRESH_MINUTES:-30}
+      - PROXY_MAX_CANDIDATES=${PROXY_MAX_CANDIDATES:-6}
+      - PROXY_MAX_POOL_SIZE=${PROXY_MAX_POOL_SIZE:-5000}
+      - PROXY_CHECK_TIMEOUT_MS=${PROXY_CHECK_TIMEOUT_MS:-6000}
+      - PROXY_COOLDOWN_MINUTES=${PROXY_COOLDOWN_MINUTES:-10}
+      - PROXY_CHECK_URL=${PROXY_CHECK_URL:-https://api.ipify.org/}
+      - PROXY_CACHE_FILE=/app/data/proxies.json
+
+      # Geo lookup + journal
+      - GEO_LOOKUP_URL=${GEO_LOOKUP_URL:-https://ipwho.is/}
+      - GEO_LOOKUP_TIMEOUT_MS=${GEO_LOOKUP_TIMEOUT_MS:-5000}
+      - GEO_CACHE_FILE=/app/data/geo.json
+      - EGRESS_LOG_FILE=/app/logs/egress.jsonl
     volumes:
       - ./downloads:/app/downloads
+      - ./data:/app/data
+      - ./logs:/app/logs
     restart: unless-stopped

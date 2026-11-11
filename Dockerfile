@@ -16,4 +16,7 @@ COPY playwright.config.ts ./playwright.config.ts
 COPY src ./src
 COPY tests ./tests
 
+# Proxy and geo caches plus the egress journal are written at runtime.
+RUN mkdir -p /app/data /app/logs
+
 CMD ["pnpm", "run", "monitor"]
