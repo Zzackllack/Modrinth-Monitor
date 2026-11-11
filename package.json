@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "test": "pnpm exec playwright test",
-    "test:unit": "node --test checks/download-policy.test.js checks/config.test.js checks/geo-policy.test.js checks/proxy-model.test.js checks/proxy-check.test.js checks/proxy-pool.test.js checks/egress-manager.test.js checks/egress-journal.test.js",
+    "test:unit": "node --test checks/download-policy.test.js checks/config.test.js checks/geo-policy.test.js checks/country-names.test.js checks/gluetun-client.test.js checks/proxy-model.test.js checks/proxy-check.test.js checks/proxy-pool.test.js checks/egress-manager.test.js checks/egress-journal.test.js checks/playwright-failure.test.js",
     "test:local": "node --test checks/monitor.test.js",
     "monitor": "node src/scheduler.js"
   },

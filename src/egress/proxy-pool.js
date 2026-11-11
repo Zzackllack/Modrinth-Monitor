@@ -63,6 +63,7 @@ class ProxyPool {
     cooldownMs = DEFAULTS.cooldownMs,
     checkUrl,
     checkTimeoutMs = 6_000,
+    verifyProxyTls = true,
     geoLookup = null,
     logAction,
     fetchSourcesImpl = defaultFetchSources,
@@ -78,6 +79,7 @@ class ProxyPool {
     this.cooldownMs = cooldownMs;
     this.checkUrl = checkUrl;
     this.checkTimeoutMs = checkTimeoutMs;
+    this.verifyProxyTls = verifyProxyTls;
     this.geoLookup = geoLookup;
     this.logAction = logAction;
     this.fetchSources = fetchSourcesImpl;
@@ -112,6 +114,9 @@ class ProxyPool {
         const data = JSON.parse(text);
         for (const entry of data.entries || []) {
           if (!entry || !entry.id) continue;
+          if (this.protocols.length && !this.protocols.includes(entry.protocol)) {
+            continue;
+          }
           this.entries.set(entry.id, entry);
         }
         this.refreshedAt = data.updatedAt ? Date.parse(data.updatedAt) : null;
@@ -308,10 +313,18 @@ class ProxyPool {
 
     for (let offset = 0; offset < ordered.length; offset += batchSize) {
       const batch = ordered.slice(offset, offset + batchSize);
+      let settled = false;
+
       try {
-        return await firstSuccess(batch, (entry) =>
-          this.verifyCandidate(entry, { bucket, preferred })
-        );
+        return await firstSuccess(batch, async (entry) => {
+          const result = await this.verifyCandidate(entry, {
+            bucket,
+            preferred,
+            isSuperseded: () => settled,
+          });
+          settled = true;
+          return result;
+        });
       } catch {
         // Whole batch failed; try the next one.
       }
@@ -325,14 +338,17 @@ class ProxyPool {
     return null;
   }
 
-  async verifyCandidate(entry, { bucket, preferred }) {
+  async verifyCandidate(entry, { bucket, preferred, isSuperseded = () => false }) {
     const check = await this.checkProxy(entry, {
       checkUrl: this.checkUrl,
       timeoutMs: this.checkTimeoutMs,
+      verifyProxyTls: this.verifyProxyTls,
     });
 
     if (!check.ok) {
-      this.reportFailure(entry.id, check.error);
+      this.reportFailure(entry.id, check.error, {
+        quiet: isSuperseded(),
+      });
       throw new Error(`${entry.id}: ${check.error}`);
     }
 
@@ -344,21 +360,13 @@ class ProxyPool {
 
     if (bucket === OTHER_BUCKET) {
       if (observedCountry && preferred.includes(observedCountry)) {
-        this.logAction?.("proxy.candidate.mismatch", {
-          proxy: entry.id,
-          bucket,
-          observedCountry,
-        });
+        this.logCandidateMismatch(entry, bucket, observedCountry, isSuperseded);
         throw new Error(
           `${entry.id} exits in preferred country ${observedCountry}, not "other".`
         );
       }
     } else if (observedCountry !== bucket) {
-      this.logAction?.("proxy.candidate.mismatch", {
-        proxy: entry.id,
-        bucket,
-        observedCountry: observedCountry || null,
-      });
+      this.logCandidateMismatch(entry, bucket, observedCountry, isSuperseded);
       throw new Error(
         `${entry.id} exits in ${observedCountry || "an unknown country"} instead of ${bucket}.`
       );
@@ -385,6 +393,16 @@ class ProxyPool {
     };
   }
 
+  logCandidateMismatch(entry, bucket, observedCountry, isSuperseded) {
+    // Late checks from a batch that already produced a winner are noise.
+    if (isSuperseded()) return;
+    this.logAction?.("proxy.candidate.mismatch", {
+      proxy: entry.id,
+      bucket,
+      observedCountry: observedCountry || null,
+    });
+  }
+
   reportSuccess(id, { latencyMs, ip, country } = {}) {
     const entry = this.entries.get(id);
     if (!entry) return;
@@ -401,7 +419,7 @@ class ProxyPool {
     this.schedulePersist();
   }
 
-  reportFailure(id, error) {
+  reportFailure(id, error, { quiet = false } = {}) {
     const entry = this.entries.get(id);
     if (!entry) return;
 
@@ -409,11 +427,13 @@ class ProxyPool {
     entry.lastFailAt = this.now();
     entry.lastError = String(error || "unknown error").slice(0, 200);
 
-    this.logAction?.("proxy.candidate.failed", {
-      proxy: id,
-      failures: entry.failures,
-      error: entry.lastError,
-    });
+    if (!quiet) {
+      this.logAction?.("proxy.candidate.failed", {
+        proxy: id,
+        failures: entry.failures,
+        error: entry.lastError,
+      });
+    }
 
     this.dirty = true;
     this.schedulePersist();

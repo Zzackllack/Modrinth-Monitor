@@ -73,13 +73,15 @@ Country weights accept ISO 3166-1 alpha-2 codes and the `other` bucket. Weights 
 - `GLUETUN_CONTROL_URL`: control server base URL (default: `http://localhost:8000`)
 - `GLUETUN_CONTROL_USER` / `GLUETUN_CONTROL_PASSWORD`: basic auth
 - `VPN_PROXY_URL`: Gluetun's built-in HTTP proxy (`http://vpn:8888` in compose). Without it, the monitor must share the VPN network namespace.
+- Country selection is sent to Gluetun using the provider's country *names* (NordVPN rejects ISO codes like `DE`). ISO codes from `EGRESS_COUNTRY_WEIGHTS` are translated automatically, and a provider-specific spelling is learned once from Gluetun's validation error if it differs.
 - `GLUETUN_CITY_POOL`, `GLUETUN_REGION_POOL`, `GLUETUN_HOSTNAME_POOL`: optional constraints within the selected country
 - `VPN_CONNECT_TIMEOUT_SECONDS`, `VPN_RESTART_TIMEOUT_SECONDS`, `VPN_STATUS_POLL_SECONDS`: tunnel restart budget
 
 ### Proxy route
 
 - `PROXY_SOURCES`: `proxifly`, `monosans`, `thespeedx`, `clarketm`, `hookzof`, or any raw-text URL
-- `PROXY_PROTOCOLS`: default `http,https,socks5`
+- `PROXY_PROTOCOLS`: default `http,socks5`. `https` proxies are opt-in: Chromium validates the certificate of the proxy hop itself, and most free "https" proxies are self-signed.
+- `PROXY_VERIFY_TLS`: verify the proxy certificate during health checks (default: `true`). Turning this off only moves the failure into the browser as `ERR_PROXY_CERTIFICATE_INVALID`.
 - `PROXY_REFRESH_MINUTES`: feed refresh interval (default: `30`)
 - `PROXY_MAX_CANDIDATES`: parallel candidate checks per batch (default: `6`)
 - `PROXY_CHECK_TIMEOUT_MS`, `PROXY_COOLDOWN_MINUTES`, `PROXY_CHECK_URL`
@@ -117,6 +119,7 @@ Only browser traffic is routed through the selected egress. Proxy-feed refresh a
 - Entries are deduped by protocol/host/port and capped by `PROXY_MAX_POOL_SIZE` with country diversity preserved.
 - Health checks are strict: a proxy must complete a CONNECT or SOCKS handshake, negotiate TLS with the check endpoint, and return a valid response. TCP-only checks are not used.
 - IPv4 and IPv6 proxy literals are both supported, as are `http`, `https`, `socks4`/`socks4a` and `socks5`/`socks5h`. SOCKS proxies requiring credentials are skipped because Chromium cannot send them.
+- `https` proxies are filtered by certificate validity because Chromium validates the proxy hop: a self-signed proxy certificate aborts the page load with `ERR_PROXY_CERTIFICATE_INVALID`, so the health check rejects it up front. `https` is therefore not in the default protocol list.
 - Health state (last success, latency, failure count, observed exit IP/country) is persisted to `PROXY_CACHE_FILE` so restarts reuse a warm pool.
 
 Free proxies are unreliable by nature: expect slow first checks and frequent failures. The pool tolerates this by trying candidates in parallel batches and falling back to the VPN when enabled.
@@ -127,8 +130,9 @@ Every run writes structured JSON to stdout and appends the same records to `EGRE
 
 - `egress.route.planned` — mode, kind, bucket, requested country
 - `egress.proxy.ready` / `egress.vpn.ready` — chosen proxy id or VPN selection, observed country, exit IP, latency
+- `gluetun.country.resolved` — provider-specific country spelling learned from a validation error
 - `egress.probe.ok` / `egress.probe.failed` — pre-flight through the actual route
-- `egress.attempt.start` / `egress.attempt.success` / `egress.attempt.failed` — per attempt, with errors
+- `egress.attempt.start` / `egress.attempt.success` / `egress.attempt.failed` — per attempt, with errors. Playwright failures include a short excerpt such as `net::ERR_PROXY_CERTIFICATE_INVALID`
 - `egress.retry.scheduled`, `egress.exhausted` — retry budget
 - `proxy.source.loaded` / `proxy.source.failed`, `proxy.refresh.completed`, `proxy.candidate.failed`, `proxy.candidate.mismatch`
 - `visit.mode.selected` — download decision plus egress metadata, from the Playwright side

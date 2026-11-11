@@ -6,7 +6,8 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { startHttpProxy } = require("./helpers/proxy-fixtures");
+const { startHttpProxy, startTlsProxy } = require("./helpers/proxy-fixtures");
+const { CERT, KEY } = require("./helpers/tls-cert");
 
 function runMonitor(env, outputDir) {
   return new Promise((resolve, reject) => {
@@ -132,5 +133,23 @@ test("monitor visits the page with and without a download", { timeout: 180_000 }
     );
     assert.match(result.output, /"egressKind":"proxy"/);
     assert.match(result.output, /"egressCountry":"US"/);
+  });
+
+  await t.test("surfaces HTTPS proxy certificate failures", async () => {
+    pageVisits = 0;
+    downloadRequests = 0;
+    const proxy = await startTlsProxy({ key: KEY, cert: CERT });
+    t.after(() => proxy.close());
+
+    const result = await runMonitor({
+      MODRINTH_URL: modrinthUrl,
+      DOWNLOAD_DIR: path.join(temporaryDir, "tls-proxy", "downloads"),
+      DOWNLOAD_PERCENTAGE: "0",
+      MONITOR_PROXY_SERVER: `https://127.0.0.1:${proxy.port}`,
+    }, path.join(temporaryDir, "tls-proxy", "results"));
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.output, /ERR_PROXY_CERTIFICATE_INVALID/);
+    assert.equal(pageVisits, 0);
   });
 });

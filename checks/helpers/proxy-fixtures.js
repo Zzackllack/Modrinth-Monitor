@@ -1,5 +1,6 @@
 const http = require("node:http");
 const net = require("node:net");
+const tls = require("node:tls");
 const { once } = require("node:events");
 const { splitHostPort } = require("../../src/egress/proxy-model");
 
@@ -131,6 +132,60 @@ async function startSilentProxy() {
   };
 }
 
+/** HTTPS proxy (TLS to the proxy) with a self-signed certificate. */
+async function startTlsProxy({ key, cert }) {
+  const sockets = new Set();
+
+  const server = tls.createServer({ key, cert }, (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => socket.destroy());
+
+    let buffer = Buffer.alloc(0);
+    const onData = (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const headEnd = buffer.indexOf("\r\n\r\n");
+      if (headEnd === -1) return;
+
+      const [requestLine] = buffer
+        .subarray(0, headEnd)
+        .toString("latin1")
+        .split("\r\n");
+      const rest = buffer.subarray(headEnd + 4);
+      socket.off("data", onData);
+
+      const [, authority] = requestLine.split(" ");
+      const parsed = splitHostPort(authority || "");
+      if (!parsed) {
+        socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+        return;
+      }
+
+      const upstream = net.connect(Number(parsed.port), parsed.host, () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (rest.length) upstream.write(rest);
+        upstream.pipe(socket);
+        socket.pipe(upstream);
+      });
+      upstream.on("error", () => socket.destroy());
+    };
+
+    socket.on("data", onData);
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  return {
+    port: server.address().port,
+    close: () =>
+      new Promise((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(resolve);
+      }),
+  };
+}
+
 /** SOCKS5 server that only supports unauthenticated CONNECT. */
 async function startSocks5Proxy({ rejectMethods = false } = {}) {
   const stats = { connects: 0 };
@@ -246,4 +301,5 @@ module.exports = {
   startRejectingProxy,
   startSilentProxy,
   startSocks5Proxy,
+  startTlsProxy,
 };

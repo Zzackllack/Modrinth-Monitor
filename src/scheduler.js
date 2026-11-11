@@ -4,6 +4,7 @@ const { EgressJournal } = require("./egress/egress-journal");
 const { EgressManager } = require("./egress/egress-manager");
 const { GeoLookup } = require("./egress/geo-lookup");
 const { GluetunClient } = require("./egress/gluetun");
+const { summarizePlaywrightFailure } = require("./egress/playwright-failure");
 const { ProxyPool } = require("./egress/proxy-pool");
 const { sleep } = require("./net/http");
 const { dumpEnv, dumpSystem, logAction } = require("./logger");
@@ -45,12 +46,29 @@ function runPlaywright(routeEnv, config) {
     });
 
     const child = spawn("pnpm", ["exec", "playwright", "test"], {
-      stdio: "inherit",
+      // Piped instead of inherited so the failure reason (for example
+      // ERR_PROXY_CERTIFICATE_INVALID) reaches the egress journal.
+      stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...childEnv(routeEnv),
         PLAYWRIGHT_BROWSERS_PATH: config.scheduler.browsersPath,
       },
-    });    activeChild = child;
+    });
+    activeChild = child;
+
+    let tail = "";
+    const collect = (chunk) => {
+      tail = (tail + chunk.toString()).slice(-8_000);
+    };
+
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      collect(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      collect(chunk);
+    });
 
     child.on("exit", (code, signal) => {
       activeChild = null;
@@ -58,13 +76,14 @@ function runPlaywright(routeEnv, config) {
         resolve();
         return;
       }
-      reject(
-        new Error(
-          code === null
-            ? `Playwright was terminated by ${signal}.`
-            : `Playwright exited with code ${code}.`
-        )
-      );
+
+      const reason =
+        code === null
+          ? `Playwright was terminated by ${signal}.`
+          : `Playwright exited with code ${code}.`;
+      const excerpt = summarizePlaywrightFailure(tail);
+
+      reject(new Error(excerpt ? `${reason} ${excerpt}` : reason));
     });
 
     child.on("error", (error) => {
@@ -126,6 +145,7 @@ async function createProxyPool(config, geoLookup, journal) {
     cooldownMs: config.proxy.cooldownMs,
     checkUrl: config.proxy.checkUrl,
     checkTimeoutMs: config.proxy.checkTimeoutMs,
+    verifyProxyTls: config.proxy.verifyProxyTls,
     geoLookup,
     logAction,
   });

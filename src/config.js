@@ -67,7 +67,7 @@ function modeEnv(env) {
 }
 
 function protocolEnv(env) {
-  const protocols = listEnv(env.PROXY_PROTOCOLS || "http,https,socks5").map(
+  const protocols = listEnv(env.PROXY_PROTOCOLS || "http,socks5").map(
     (value) => value.toLowerCase()
   );
   const supported = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"];
@@ -238,6 +238,9 @@ function loadConfig(env = process.env) {
         min: 500,
         max: 60_000,
       }),
+      // Chromium rejects invalid proxy certificates, so https proxies must pass
+      // certificate verification during the health check as well.
+      verifyProxyTls: booleanEnv(env, "PROXY_VERIFY_TLS", true),
       verifyCountry: booleanEnv(env, "PROXY_VERIFY_COUNTRY", true),
     },
     geoLookup: {

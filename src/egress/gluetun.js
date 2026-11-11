@@ -1,5 +1,9 @@
 const { fetchWithTimeout, sleep } = require("../net/http");
-const { matchesBucket } = require("../net/geo");
+const {
+  englishCountryName,
+  matchCountryChoice,
+  parseCountryChoices,
+} = require("./country-names");
 
 const DEFAULT_CONTROL_URL = "http://localhost:8000";
 
@@ -9,6 +13,11 @@ const DEFAULT_CONTROL_URL = "http://localhost:8000";
  * `PUT /v1/vpn/settings` applies server selection and restarts the tunnel, so a
  * country switch is: patch settings -> wait for `running` -> confirm the exit
  * country actually changed.
+ *
+ * Gluetun validates country filters against the provider's own country names
+ * ("Germany"), not ISO codes ("DE"). Codes are translated here; if a provider
+ * uses another spelling, the validation error lists the available choices and
+ * the request is retried once with the provider's name.
  */
 class GluetunClient {
   constructor({
@@ -25,6 +34,7 @@ class GluetunClient {
     this.timeoutMs = timeoutMs;
     this.logAction = logAction;
     this.fetch = fetchImpl;
+    this.countryNameOverrides = new Map();
   }
 
   headers() {
@@ -51,12 +61,19 @@ class GluetunClient {
 
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(
+      const error = new Error(
         `Gluetun ${method} ${path} failed (${response.status}): ${text.slice(0, 300) || response.statusText}`
       );
+      error.status = response.status;
+      error.body = text;
+      throw error;
     }
 
     return text;
+  }
+
+  countryName(code) {
+    return this.countryNameOverrides.get(code) || englishCountryName(code);
   }
 
   async getStatus() {
@@ -71,15 +88,7 @@ class GluetunClient {
     return data.public_ip || null;
   }
 
-  async setServerSelection({ countries, cities, regions, hostnames }) {
-    const selection = {};
-    if (countries && countries.length) selection.countries = countries;
-    if (cities && cities.length) selection.cities = cities;
-    if (regions && regions.length) selection.regions = regions;
-    if (hostnames && hostnames.length) selection.hostnames = hostnames;
-
-    if (!Object.keys(selection).length) return null;
-
+  async patchServerSelection(selection) {
     const body = { provider: { server_selection: selection } };
     this.logAction?.("gluetun.settings.patch", { selection });
 
@@ -92,7 +101,57 @@ class GluetunClient {
       outcome: outcome.slice(0, 120),
     });
 
-    return { selection, outcome };
+    return outcome;
+  }
+
+  buildSelection({ countries = [], cities, regions, hostnames }) {
+    const selection = {};
+    if (countries.length) {
+      selection.countries = countries.map((code) => this.countryName(code));
+    }
+    if (cities && cities.length) selection.cities = cities;
+    if (regions && regions.length) selection.regions = regions;
+    if (hostnames && hostnames.length) selection.hostnames = hostnames;
+    return selection;
+  }
+
+  async setServerSelection({ countries = [], cities, regions, hostnames } = {}) {
+    const selection = this.buildSelection({ countries, cities, regions, hostnames });
+    if (!Object.keys(selection).length) return null;
+
+    try {
+      const outcome = await this.patchServerSelection(selection);
+      return { selection, outcome };
+    } catch (error) {
+      const choices = parseCountryChoices(error.body);
+      if (
+        error.status !== 400 ||
+        !countries.length ||
+        !choices.length ||
+        !/country specified is not valid/i.test(error.body || "")
+      ) {
+        throw error;
+      }
+
+      const code = countries[0];
+      const resolved = matchCountryChoice(choices, code);
+      if (!resolved) {
+        throw new Error(
+          `Gluetun does not offer a country for "${code}" (${englishCountryName(code)}); available countries: ${choices.slice(0, 15).join(", ")}...`
+        );
+      }
+
+      this.countryNameOverrides.set(code, resolved);
+      this.logAction?.("gluetun.country.resolved", {
+        code,
+        requested: selection.countries[0],
+        resolved,
+      });
+
+      const retrySelection = { ...selection, countries: [resolved] };
+      const outcome = await this.patchServerSelection(retrySelection);
+      return { selection: retrySelection, outcome };
+    }
   }
 
   /**
@@ -121,7 +180,8 @@ class GluetunClient {
     return false;
   }
 
-  async waitForRunning({ timeoutMs = 120_000, pollMs = 2_000 } = {}) {    const deadline = Date.now() + timeoutMs;
+  async waitForRunning({ timeoutMs = 120_000, pollMs = 2_000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
     let lastStatus = "unknown";
 
     while (Date.now() < deadline) {
@@ -136,39 +196,6 @@ class GluetunClient {
 
     throw new Error(
       `Gluetun did not reach "running" within ${Math.round(timeoutMs / 1000)}s (last status: ${lastStatus}).`
-    );
-  }
-
-  /**
-   * Waits until the exit IP resolves to a country that satisfies `bucket`.
-   * A stale IP from the previous route is rejected, otherwise a failed
-   * reconnection would silently keep the old country.
-   */
-  async waitForCountry({
-    bucket,
-    preferred = [],
-    lookup,
-    previousIp = null,
-    timeoutMs = 90_000,
-    pollMs = 3_000,
-  } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    let lastObservation = { ip: null, country: null };
-
-    while (Date.now() < deadline) {
-      const ip = await this.getPublicIp().catch(() => null);
-      if (ip && ip !== previousIp) {
-        const country = lookup ? await lookup(ip) : undefined;
-        lastObservation = { ip, country: country || null };
-        if (matchesBucket(bucket, country, preferred)) {
-          return lastObservation;
-        }
-      }
-      await sleep(pollMs);
-    }
-
-    throw new Error(
-      `Gluetun exit country did not match bucket "${bucket}" within ${Math.round(timeoutMs / 1000)}s (last: ${lastObservation.country || "unknown"} / ${lastObservation.ip || "no ip"}).`
     );
   }
 

@@ -13,6 +13,8 @@ test("defaults to direct mode with equal country thirds", () => {
   assert.deepEqual(config.countries.preferred, ["US", "DE"]);
   assert.equal(config.retries.max, 3);
   assert.equal(config.proxy.fallback, "vpn");
+  assert.deepEqual(config.proxy.protocols, ["http", "socks5"]);
+  assert.equal(config.proxy.verifyProxyTls, true);
   assert.equal(config.vpn.proxy, null);
   assert.equal(config.scheduler.oneShot, false);
 });
@@ -61,6 +63,7 @@ test("rejects invalid egress settings instead of guessing", () => {
     { EGRESS_PROXY_FALLBACK: "tor" },
     { EGRESS_VERIFY_COUNTRY: "maybe" },
     { PROXY_PROTOCOLS: "quic" },
+    { PROXY_VERIFY_TLS: "maybe" },
     { PROXY_SOURCES: "unknown-feed" },
     { VPN_PROXY_URL: "not a valid url" },
     { MIN_DELAY_MINUTES: "abc" },

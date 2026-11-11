@@ -355,6 +355,10 @@ class EgressManager {
     const response = await this.fetch(url, {
       timeoutMs: this.config.probe.timeoutMs,
       headers: { "User-Agent": "modrinth-monitor/1.0 (+route-probe)" },
+    }).catch((error) => {
+      throw new Error(
+        `Route probe failed: ${error.cause?.code || error.cause?.message || error.message}`
+      );
     });
     if (!response.ok) {
       throw new Error(`Route probe returned HTTP ${response.status}.`);
@@ -464,8 +468,9 @@ class EgressManager {
     this.journal.record("egress.exhausted", { attempts: maxAttempts, failures });
 
     const last = failures[failures.length - 1];
+    const detail = last ? String(last.error).replace(/\.+$/, "") : "no route available";
     const error = new Error(
-      `Egress failed after ${maxAttempts} attempt(s): ${last ? last.error : "no route available"}.`
+      `Egress failed after ${maxAttempts} attempt(s): ${detail}.`
     );
     error.attempts = failures;
     throw error;

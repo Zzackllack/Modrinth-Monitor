@@ -154,19 +154,19 @@ class SocketReader {
   }
 }
 
-function connectSocket({ host, port, timeoutMs, useTls }) {
+function connectSocket({ host, port, timeoutMs, useTls, verifyTls = true }) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
-    // Free "https" proxies frequently use self-signed certificates. The hop to
-    // the proxy is not what protects the payload; the payload is still wrapped
-    // in TLS to the destination.
+    // Most free "https" proxies use self-signed certificates. Chromium refuses
+    // them with ERR_PROXY_CERTIFICATE_INVALID, so the checker must verify the
+    // proxy hop too instead of only proving that TLS can be negotiated.
     const socket = useTls
       ? tls.connect({
           host,
           port,
           servername: net.isIP(host) ? undefined : host,
-          rejectUnauthorized: false,
+          rejectUnauthorized: verifyTls,
         })
       : net.connect({ host, port });
 
@@ -251,12 +251,13 @@ function socksAddress(host) {
   return { atyp: 0x03, address: Buffer.concat([Buffer.from([name.length]), name]), name: bare };
 }
 
-async function httpConnect(proxy, target, timeoutMs) {
+async function httpConnect(proxy, target, timeoutMs, verifyProxyTls = true) {
   const socket = await connectSocket({
     host: proxy.host,
     port: proxy.port,
     timeoutMs,
     useTls: proxy.protocol === "https",
+    verifyTls: verifyProxyTls,
   });
 
   const authority = `${formatHostForUrl(target.host)}:${target.port}`;
@@ -407,11 +408,15 @@ async function socks4Connect(proxy, target, timeoutMs) {
 }
 
 /** Opens a raw tunnel to `target` through `proxy`. */
-async function openTunnel(proxy, target, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+async function openTunnel(
+  proxy,
+  target,
+  { timeoutMs = DEFAULT_TIMEOUT_MS, verifyProxyTls = true } = {}
+) {
   switch (proxy.protocol) {
     case "http":
     case "https":
-      return httpConnect(proxy, target, timeoutMs);
+      return httpConnect(proxy, target, timeoutMs, verifyProxyTls);
     case "socks4":
     case "socks4a":
       return socks4Connect(proxy, target, timeoutMs);
@@ -522,7 +527,12 @@ async function readResponseBody(reader, headers, maxBytes) {
 async function httpGetThroughProxy(
   proxy,
   urlString,
-  { timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = 64 * 1024, headers = {} } = {}
+  {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxBytes = 64 * 1024,
+    headers = {},
+    verifyProxyTls = true,
+  } = {}
 ) {
   const url = new URL(urlString);
   const targetPort = url.port
@@ -535,7 +545,7 @@ async function httpGetThroughProxy(
   let socket = await openTunnel(
     proxy,
     { host: targetHost, port: targetPort },
-    { timeoutMs }
+    { timeoutMs, verifyProxyTls }
   );
 
   try {
@@ -594,6 +604,7 @@ async function checkProxy(proxy, options = {}) {
     checkUrl = DEFAULT_CHECK_URL,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxBytes = 4 * 1024,
+    verifyProxyTls = true,
   } = options;
   const startedAt = Date.now();
 
@@ -601,6 +612,7 @@ async function checkProxy(proxy, options = {}) {
     const response = await httpGetThroughProxy(proxy, checkUrl, {
       timeoutMs,
       maxBytes,
+      verifyProxyTls,
     });
 
     if (response.status < 200 || response.status >= 400) {
@@ -626,9 +638,13 @@ async function checkProxy(proxy, options = {}) {
       status: response.status,
     };
   } catch (error) {
+    const message = error.message || String(error);
     return {
       ok: false,
-      error: error.message || String(error),
+      error:
+        proxy.protocol === "https" && /certificate/i.test(message)
+          ? `proxy TLS certificate rejected: ${message}`
+          : message,
       latencyMs: Date.now() - startedAt,
     };
   }

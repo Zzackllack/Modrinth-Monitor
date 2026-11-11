@@ -12,7 +12,9 @@ const {
   startRejectingProxy,
   startSilentProxy,
   startSocks5Proxy,
+  startTlsProxy,
 } = require("./helpers/proxy-fixtures");
+const { CERT, KEY } = require("./helpers/tls-cert");
 
 test("accepts a working HTTP CONNECT proxy and parses the exit IP", async (t) => {
   const origin = await startOriginServer((request, response) => {
@@ -131,6 +133,31 @@ test("reports SOCKS5 proxies that reject all auth methods", async (t) => {
 
   assert.equal(result.ok, false);
   assert.match(result.error, /authentication methods|closed the connection/i);
+});
+
+test("rejects HTTPS proxies with certificates Chromium would refuse", async (t) => {
+  const origin = await startOriginServer((request, response) => {
+    response.writeHead(200, { "Content-Type": "text/plain" });
+    response.end("203.0.113.9\n");
+  });
+  const proxy = await startTlsProxy({ key: KEY, cert: CERT });
+  t.after(() => origin.close());
+  t.after(() => proxy.close());
+
+  const entry = { protocol: "https", host: "127.0.0.1", port: proxy.port };
+  const checkUrl = `http://127.0.0.1:${origin.port}/ip`;
+
+  const strict = await checkProxy(entry, { checkUrl, timeoutMs: 3_000 });
+  assert.equal(strict.ok, false);
+  assert.match(strict.error, /certificate/i);
+
+  const lenient = await checkProxy(entry, {
+    checkUrl,
+    timeoutMs: 3_000,
+    verifyProxyTls: false,
+  });
+  assert.equal(lenient.ok, true, lenient.error);
+  assert.equal(lenient.ip, "203.0.113.9");
 });
 
 test("supports IPv6 proxy addresses when the host has IPv6", async (t) => {
