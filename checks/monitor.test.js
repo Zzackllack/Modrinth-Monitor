@@ -6,13 +6,21 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { startHttpProxy } = require("./helpers/proxy-fixtures");
 
 function runMonitor(env, outputDir) {
   return new Promise((resolve, reject) => {
+    const inherited = { ...process.env };
+    for (const key of Object.keys(inherited)) {
+      if (key.startsWith("MONITOR_PROXY_") || key.startsWith("EGRESS_")) {
+        delete inherited[key];
+      }
+    }
+
     const child = spawn(
       process.execPath,
       [require.resolve("@playwright/test/cli"), "test", "--output", outputDir],
-      { env: { ...process.env, ...env }, timeout: 120_000 }
+      { env: { ...inherited, ...env }, timeout: 120_000 }
     );
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk; });
@@ -96,5 +104,33 @@ test("monitor visits the page with and without a download", { timeout: 180_000 }
     assert.match(result.output, /DOWNLOAD_PERCENTAGE must be a number between 0 and 100/);
     assert.equal(pageVisits, 0);
     assert.equal(downloadRequests, 0);
+  });
+
+  await t.test("routes the visit through the configured proxy", async () => {
+    pageVisits = 0;
+    downloadRequests = 0;
+    const proxy = await startHttpProxy();
+    t.after(() => proxy.close());
+
+    const result = await runMonitor({
+      MODRINTH_URL: modrinthUrl,
+      DOWNLOAD_DIR: path.join(temporaryDir, "proxy", "downloads"),
+      DOWNLOAD_PERCENTAGE: "0",
+      MONITOR_PROXY_SERVER: `http://127.0.0.1:${proxy.port}`,
+      EGRESS_KIND: "proxy",
+      EGRESS_BUCKET: "US",
+      EGRESS_COUNTRY: "US",
+      EGRESS_PROXY_ID: "http://127.0.0.1:1",
+      EGRESS_ATTEMPT: "1",
+    }, path.join(temporaryDir, "proxy", "results"));
+
+    assert.equal(result.code, 0, result.output);
+    assert.equal(pageVisits, 1, result.output);
+    assert.ok(
+      proxy.stats.requests + proxy.stats.connects > 0,
+      `expected traffic through the proxy, saw ${JSON.stringify(proxy.stats)}`
+    );
+    assert.match(result.output, /"egressKind":"proxy"/);
+    assert.match(result.output, /"egressCountry":"US"/);
   });
 });
